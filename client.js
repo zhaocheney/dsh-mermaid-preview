@@ -132,21 +132,38 @@ var STYLE = `
   color: var(--dsw-alias-label-secondary);
   cursor: pointer;
   pointer-events: auto;
-  line-height: 0;
-  transition: background-color 120ms ease, color 120ms ease;
 }
 .dsh-mermaid-preview-trigger:hover {
-  background: var(--dsw-alias-bg-layer-2);
-  color: var(--dsw-alias-label-primary);
+  background: var(--dsw-alias-interactive-bg-hover);
 }
 .dsh-mermaid-preview-trigger:focus-visible {
-  outline: 2px solid var(--dsw-alias-brand-primary);
-  outline-offset: 1px;
+  outline: 1px solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
+  outline-offset: 2px;
 }
 .dsh-mermaid-preview-trigger > svg {
   display: block;
-  width: 16px;
-  height: 16px;
+  width: 14px;
+  height: 14px;
+}
+
+.dsh-mermaid-preview-tooltip {
+  position: fixed;
+  z-index: 1001;
+  padding: 3px 7px;
+  border-radius: var(--dsw-radius-sm, 6px);
+  background: var(--dsw-alias-tooltip-bg, #1f1f1f);
+  color: var(--dsw-static-neutral-bluish-00, #fff);
+  font-family: var(--dsw-font-family);
+  font-size: 13px;
+  line-height: 20px;
+  white-space: nowrap;
+  pointer-events: none;
+  transform: translate(-50%, -100%);
+  animation: dsh-mermaid-preview-tooltip-in 150ms var(--ds-ease-in-out, ease);
+}
+@keyframes dsh-mermaid-preview-tooltip-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 
 .dsh-mermaid-preview-backdrop {
@@ -359,10 +376,9 @@ var STYLE = `
   }
 }
 @media (prefers-reduced-motion: reduce) {
-  .dsh-mermaid-preview-trigger,
+  .dsh-mermaid-preview-tooltip,
   .dsh-mermaid-preview-spinner {
     animation: none;
-    transition: none;
   }
 }
 `;
@@ -394,11 +410,28 @@ function isMermaidCode(code) {
   }
   return false;
 }
-function codeBlockOf(code) {
-  const content = code.closest("[data-code-block-content]");
-  const parent = content?.parentElement;
-  if (parent?.querySelector("[data-code-block-banner]") !== null) return parent;
-  return code.closest(".md-code-block") ?? parent;
+var MERMAID_HEADER = /^(?:graph\b|flowchart\b|sequenceDiagram\b|classDiagram(?:-v2)?\b|stateDiagram(?:-v2)?\b|erDiagram\b|journey\b|gantt\b|pie\b|gitGraph\b|mindmap\b|timeline\b|quadrantChart\b|xychart(?:-beta)?\b|sankey(?:-beta)?\b|block(?:-beta)?\b|packet(?:-beta)?\b|kanban\b|architecture(?:-beta)?\b|C4(?:Context|Container|Component|Dynamic|Deployment)\b|requirementDiagram\b|zenuml\b)/;
+function firstMermaidStatement(source) {
+  const lines = source.split(/\r?\n/u);
+  let index = 0;
+  const skipNoise = () => {
+    while (index < lines.length) {
+      const line = lines[index].trim();
+      if (line !== "" && !line.startsWith("%%")) return;
+      index += 1;
+    }
+  };
+  skipNoise();
+  if (lines[index]?.trim() === "---") {
+    index += 1;
+    while (index < lines.length && lines[index].trim() !== "---") index += 1;
+    index += 1;
+    skipNoise();
+  }
+  return lines[index]?.trim() ?? "";
+}
+function looksLikeMermaid(source) {
+  return MERMAID_HEADER.test(firstMermaidStatement(source));
 }
 function mermaidCodeOf(block) {
   return block.querySelector("[data-code-block-content] code, pre code")?.textContent ?? "";
@@ -417,11 +450,11 @@ function triggerRectFor(block) {
   const banner = block.querySelector("[data-code-block-banner]");
   if (banner === null) return null;
   const buttons = banner.querySelectorAll("button");
-  const copy = buttons.length === 0 ? null : buttons[buttons.length - 1];
-  const anchor = copy?.getBoundingClientRect() ?? banner.getBoundingClientRect();
+  const action = buttons.length === 0 ? null : buttons[0];
+  const anchor = action?.getBoundingClientRect() ?? banner.getBoundingClientRect();
   if (anchor.width <= 0 || anchor.height <= 0) return null;
   const top = anchor.top + (anchor.height - TRIGGER_SIZE) / 2;
-  const left = copy === null ? anchor.right - BANNER_PADDING - TRIGGER_SIZE : anchor.left - TRIGGER_GAP - TRIGGER_SIZE;
+  const left = action === null ? anchor.right - BANNER_PADDING - TRIGGER_SIZE : anchor.left - TRIGGER_GAP - TRIGGER_SIZE;
   if (left < 0 || top < 0) return null;
   if (left + TRIGGER_SIZE > window.innerWidth || top + TRIGGER_SIZE > window.innerHeight) return null;
   const hit = document.elementFromPoint(
@@ -558,8 +591,44 @@ function useColorScheme(ctx) {
 }
 function TriggerLayer({ onOpen, t }) {
   const [entries, setEntries] = useState([]);
+  const [tip, setTip] = useState(null);
   const idsRef = useRef(/* @__PURE__ */ new WeakMap());
   const sequenceRef = useRef(0);
+  const tipTimerRef = useRef(0);
+  const hideTip = useCallback(() => {
+    window.clearTimeout(tipTimerRef.current);
+    tipTimerRef.current = 0;
+    setTip(null);
+  }, []);
+  const showTip = useCallback((entry, element) => {
+    window.clearTimeout(tipTimerRef.current);
+    tipTimerRef.current = window.setTimeout(() => {
+      const rect = element.getBoundingClientRect();
+      setTip({
+        key: entry.key,
+        label: t("preview"),
+        left: rect.left + rect.width / 2,
+        top: rect.top - 6
+      });
+    }, 320);
+  }, [t]);
+  useEffect(() => () => window.clearTimeout(tipTimerRef.current), []);
+  useEffect(() => {
+    if (tip === null) return void 0;
+    const hide = () => hideTip();
+    window.addEventListener("scroll", hide, true);
+    window.addEventListener("wheel", hide, { passive: true, capture: true });
+    window.addEventListener("resize", hide);
+    return () => {
+      window.removeEventListener("scroll", hide, true);
+      window.removeEventListener("wheel", hide, true);
+      window.removeEventListener("resize", hide);
+    };
+  }, [tip, hideTip]);
+  useEffect(() => {
+    if (tip === null) return;
+    if (!entries.some((entry) => entry.key === tip.key)) setTip(null);
+  }, [entries, tip]);
   useEffect(() => {
     let frame = 0;
     let disposed = false;
@@ -574,15 +643,26 @@ function TriggerLayer({ onOpen, t }) {
       }
       return id;
     };
+    const verdicts = /* @__PURE__ */ new WeakMap();
+    const isMermaidBlock = (block) => {
+      const code = block.querySelector("[data-code-block-content] code");
+      if (code !== null && isMermaidCode(code)) return true;
+      const source = mermaidCodeOf(block);
+      const cached = verdicts.get(block);
+      if (cached !== void 0 && cached.source === source) return cached.mermaid;
+      const mermaid = looksLikeMermaid(source);
+      verdicts.set(block, { source, mermaid });
+      return mermaid;
+    };
     const scan = () => {
       frame = 0;
       if (disposed) return;
       const next = [];
       const current = /* @__PURE__ */ new Set();
-      for (const code of document.querySelectorAll('code[class*="language-mermaid"]')) {
-        if (!isMermaidCode(code)) continue;
-        const block = codeBlockOf(code);
-        if (block === null) continue;
+      for (const content of document.querySelectorAll("[data-code-block-content]")) {
+        const block = content.parentElement;
+        if (block === null || block.querySelector("[data-code-block-banner]") === null) continue;
+        if (!isMermaidBlock(block)) continue;
         const rect = triggerRectFor(block);
         if (rect === null) continue;
         next.push({ key: idFor(block), block, top: rect.top, left: rect.left });
@@ -635,7 +715,7 @@ function TriggerLayer({ onOpen, t }) {
       window.visualViewport?.removeEventListener("resize", schedule);
     };
   }, []);
-  return (0, import_react_dom.createPortal)(
+  return /* @__PURE__ */ React2.createElement(React2.Fragment, null, (0, import_react_dom.createPortal)(
     /* @__PURE__ */ React2.createElement("div", { className: "dsh-mermaid-preview-layer", "data-dsh-mermaid-preview-layer": "" }, entries.map((entry) => /* @__PURE__ */ React2.createElement(
       "button",
       {
@@ -643,19 +723,34 @@ function TriggerLayer({ onOpen, t }) {
         type: "button",
         className: "dsh-mermaid-preview-trigger",
         style: { top: entry.top, left: entry.left },
-        title: t("preview"),
         "aria-label": t("preview"),
         onPointerDown: (event) => event.stopPropagation(),
+        onPointerEnter: (event) => showTip(entry, event.currentTarget),
+        onPointerLeave: hideTip,
+        onFocus: (event) => showTip(entry, event.currentTarget),
+        onBlur: hideTip,
         onClick: (event) => {
           event.preventDefault();
           event.stopPropagation();
+          hideTip();
           onOpen(entry.block);
         }
       },
       /* @__PURE__ */ React2.createElement(PreviewIcon, null)
     ))),
     document.body
-  );
+  ), tip === null ? null : (0, import_react_dom.createPortal)(
+    /* @__PURE__ */ React2.createElement(
+      "div",
+      {
+        className: "dsh-mermaid-preview-tooltip",
+        role: "tooltip",
+        style: { left: tip.left, top: tip.top }
+      },
+      tip.label
+    ),
+    document.body
+  ));
 }
 function PreviewDialog({ code, colorScheme, onClose, renderMermaid, t }) {
   const titleId = useId();

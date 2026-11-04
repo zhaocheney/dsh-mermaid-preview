@@ -37,12 +37,40 @@ function isMermaidCode(code) {
   return false;
 }
 
-/** The outer code-block element that owns one rendered `<code>` element. */
-function codeBlockOf(code) {
-  const content = code.closest('[data-code-block-content]');
-  const parent = content?.parentElement;
-  if (parent?.querySelector('[data-code-block-banner]') !== null) return parent;
-  return code.closest('.md-code-block') ?? parent;
+/** Diagram headers Mermaid accepts at the top of a document. */
+const MERMAID_HEADER = /^(?:graph\b|flowchart\b|sequenceDiagram\b|classDiagram(?:-v2)?\b|stateDiagram(?:-v2)?\b|erDiagram\b|journey\b|gantt\b|pie\b|gitGraph\b|mindmap\b|timeline\b|quadrantChart\b|xychart(?:-beta)?\b|sankey(?:-beta)?\b|block(?:-beta)?\b|packet(?:-beta)?\b|kanban\b|architecture(?:-beta)?\b|C4(?:Context|Container|Component|Dynamic|Deployment)\b|requirementDiagram\b|zenuml\b)/;
+
+/**
+ * First meaningful Mermaid line: blank lines, `%%` directives, and an optional
+ * YAML frontmatter block are skipped.
+ */
+function firstMermaidStatement(source) {
+  const lines = source.split(/\r?\n/u);
+  let index = 0;
+  const skipNoise = () => {
+    while (index < lines.length) {
+      const line = lines[index].trim();
+      if (line !== '' && !line.startsWith('%%')) return;
+      index += 1;
+    }
+  };
+  skipNoise();
+  if (lines[index]?.trim() === '---') {
+    index += 1;
+    while (index < lines.length && lines[index].trim() !== '---') index += 1;
+    index += 1;
+    skipNoise();
+  }
+  return lines[index]?.trim() ?? '';
+}
+
+/**
+ * Whether a source text is a Mermaid diagram. Current DSH renderers do not put
+ * `language-mermaid` on the `<code>` element of a non-highlighted block, so the
+ * diagram header is the only stable signal.
+ */
+function looksLikeMermaid(source) {
+  return MERMAID_HEADER.test(firstMermaidStatement(source));
 }
 
 /** Read the source text of a markdown code block. */
@@ -63,19 +91,21 @@ function sameTriggers(left, right) {
 }
 
 /**
- * Locate the trigger just before the code block's copy action. The host banner
- * is the only stable anchor: its copy button is the last button in the banner.
+ * Locate the trigger just before the code block's leading action button. The
+ * host banner is the only stable anchor: its actions sit at the right edge, so
+ * the first button marks the left edge of the action row. Anchoring on the last
+ * button would overlap the wrap toggle that current DSH banners put before copy.
  */
 function triggerRectFor(block) {
   const banner = block.querySelector('[data-code-block-banner]');
   if (banner === null) return null;
   const buttons = banner.querySelectorAll('button');
-  const copy = buttons.length === 0 ? null : buttons[buttons.length - 1];
-  const anchor = copy?.getBoundingClientRect() ?? banner.getBoundingClientRect();
+  const action = buttons.length === 0 ? null : buttons[0];
+  const anchor = action?.getBoundingClientRect() ?? banner.getBoundingClientRect();
   if (anchor.width <= 0 || anchor.height <= 0) return null;
 
   const top = anchor.top + (anchor.height - TRIGGER_SIZE) / 2;
-  const left = copy === null
+  const left = action === null
     ? anchor.right - BANNER_PADDING - TRIGGER_SIZE
     : anchor.left - TRIGGER_GAP - TRIGGER_SIZE;
   if (left < 0 || top < 0) return null;
@@ -91,7 +121,7 @@ function triggerRectFor(block) {
   const ownSurface = hit.closest(LAYER_SELECTOR) ?? hit.closest('[data-dsh-mermaid-preview-backdrop]');
   if (!block.contains(hit) && ownSurface === null) return null;
 
-  // The trigger sits left of the copy action, so check what is actually under
+  // The trigger sits left of the action row, so check what is actually under
   // that spot too. `elementsFromPoint` lets us skip our own overlay layer.
   const stack = document.elementsFromPoint(left + TRIGGER_SIZE / 2, top + TRIGGER_SIZE / 2);
   const under = stack.find((element) => (
@@ -249,8 +279,50 @@ function useColorScheme(ctx) {
  */
 function TriggerLayer({ onOpen, t }) {
   const [entries, setEntries] = useState([]);
+  const [tip, setTip] = useState(null);
   const idsRef = useRef(new WeakMap());
   const sequenceRef = useRef(0);
+  const tipTimerRef = useRef(0);
+
+  const hideTip = useCallback(() => {
+    window.clearTimeout(tipTimerRef.current);
+    tipTimerRef.current = 0;
+    setTip(null);
+  }, []);
+
+  /** Host-style tooltip: delayed bubble above the trigger, fixed-position. */
+  const showTip = useCallback((entry, element) => {
+    window.clearTimeout(tipTimerRef.current);
+    tipTimerRef.current = window.setTimeout(() => {
+      const rect = element.getBoundingClientRect();
+      setTip({
+        key: entry.key,
+        label: t('preview'),
+        left: rect.left + rect.width / 2,
+        top: rect.top - 6,
+      });
+    }, 320);
+  }, [t]);
+
+  useEffect(() => () => window.clearTimeout(tipTimerRef.current), []);
+
+  useEffect(() => {
+    if (tip === null) return undefined;
+    const hide = () => hideTip();
+    window.addEventListener('scroll', hide, true);
+    window.addEventListener('wheel', hide, { passive: true, capture: true });
+    window.addEventListener('resize', hide);
+    return () => {
+      window.removeEventListener('scroll', hide, true);
+      window.removeEventListener('wheel', hide, true);
+      window.removeEventListener('resize', hide);
+    };
+  }, [tip, hideTip]);
+
+  useEffect(() => {
+    if (tip === null) return;
+    if (!entries.some((entry) => entry.key === tip.key)) setTip(null);
+  }, [entries, tip]);
 
   useEffect(() => {
     let frame = 0;
@@ -268,15 +340,27 @@ function TriggerLayer({ onOpen, t }) {
       return id;
     };
 
+    const verdicts = new WeakMap();
+    const isMermaidBlock = (block) => {
+      const code = block.querySelector('[data-code-block-content] code');
+      if (code !== null && isMermaidCode(code)) return true;
+      const source = mermaidCodeOf(block);
+      const cached = verdicts.get(block);
+      if (cached !== undefined && cached.source === source) return cached.mermaid;
+      const mermaid = looksLikeMermaid(source);
+      verdicts.set(block, { source, mermaid });
+      return mermaid;
+    };
+
     const scan = () => {
       frame = 0;
       if (disposed) return;
       const next = [];
       const current = new Set();
-      for (const code of document.querySelectorAll('code[class*="language-mermaid"]')) {
-        if (!isMermaidCode(code)) continue;
-        const block = codeBlockOf(code);
-        if (block === null) continue;
+      for (const content of document.querySelectorAll('[data-code-block-content]')) {
+        const block = content.parentElement;
+        if (block === null || block.querySelector('[data-code-block-banner]') === null) continue;
+        if (!isMermaidBlock(block)) continue;
         const rect = triggerRectFor(block);
         if (rect === null) continue;
         next.push({ key: idFor(block), block, top: rect.top, left: rect.left });
@@ -333,28 +417,46 @@ function TriggerLayer({ onOpen, t }) {
     };
   }, []);
 
-  return createPortal(
-    <div className="dsh-mermaid-preview-layer" data-dsh-mermaid-preview-layer="">
-      {entries.map((entry) => (
-        <button
-          key={entry.key}
-          type="button"
-          className="dsh-mermaid-preview-trigger"
-          style={{ top: entry.top, left: entry.left }}
-          title={t('preview')}
-          aria-label={t('preview')}
-          onPointerDown={(event) => event.stopPropagation()}
-          onClick={(event) => {
-            event.preventDefault();
-            event.stopPropagation();
-            onOpen(entry.block);
-          }}
+  return (
+    <>
+      {createPortal(
+        <div className="dsh-mermaid-preview-layer" data-dsh-mermaid-preview-layer="">
+          {entries.map((entry) => (
+            <button
+              key={entry.key}
+              type="button"
+              className="dsh-mermaid-preview-trigger"
+              style={{ top: entry.top, left: entry.left }}
+              aria-label={t('preview')}
+              onPointerDown={(event) => event.stopPropagation()}
+              onPointerEnter={(event) => showTip(entry, event.currentTarget)}
+              onPointerLeave={hideTip}
+              onFocus={(event) => showTip(entry, event.currentTarget)}
+              onBlur={hideTip}
+              onClick={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                hideTip();
+                onOpen(entry.block);
+              }}
+            >
+              <PreviewIcon />
+            </button>
+          ))}
+        </div>,
+        document.body,
+      )}
+      {tip === null ? null : createPortal(
+        <div
+          className="dsh-mermaid-preview-tooltip"
+          role="tooltip"
+          style={{ left: tip.left, top: tip.top }}
         >
-          <PreviewIcon />
-        </button>
-      ))}
-    </div>,
-    document.body,
+          {tip.label}
+        </div>,
+        document.body,
+      )}
+    </>
   );
 }
 

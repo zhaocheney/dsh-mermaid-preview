@@ -20,21 +20,38 @@ export const STYLE = `
   color: var(--dsw-alias-label-secondary);
   cursor: pointer;
   pointer-events: auto;
-  line-height: 0;
-  transition: background-color 120ms ease, color 120ms ease;
 }
 .dsh-mermaid-preview-trigger:hover {
-  background: var(--dsw-alias-bg-layer-2);
-  color: var(--dsw-alias-label-primary);
+  background: var(--dsw-alias-interactive-bg-hover);
 }
 .dsh-mermaid-preview-trigger:focus-visible {
-  outline: 2px solid var(--dsw-alias-brand-primary);
-  outline-offset: 1px;
+  outline: 1px solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
+  outline-offset: 2px;
 }
 .dsh-mermaid-preview-trigger > svg {
   display: block;
-  width: 16px;
-  height: 16px;
+  width: 14px;
+  height: 14px;
+}
+
+.dsh-mermaid-preview-tooltip {
+  position: fixed;
+  z-index: 1001;
+  padding: 3px 7px;
+  border-radius: var(--dsw-radius-sm, 6px);
+  background: var(--dsw-alias-tooltip-bg, #1f1f1f);
+  color: var(--dsw-static-neutral-bluish-00, #fff);
+  font-family: var(--dsw-font-family);
+  font-size: 13px;
+  line-height: 20px;
+  white-space: nowrap;
+  pointer-events: none;
+  transform: translate(-50%, -100%);
+  animation: dsh-mermaid-preview-tooltip-in 150ms var(--ds-ease-in-out, ease);
+}
+@keyframes dsh-mermaid-preview-tooltip-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 
 .dsh-mermaid-preview-backdrop {
@@ -247,10 +264,9 @@ export const STYLE = `
   }
 }
 @media (prefers-reduced-motion: reduce) {
-  .dsh-mermaid-preview-trigger,
+  .dsh-mermaid-preview-tooltip,
   .dsh-mermaid-preview-spinner {
     animation: none;
-    transition: none;
   }
 }
 `;
