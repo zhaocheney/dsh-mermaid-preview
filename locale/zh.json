@@ -1,0 +1,20 @@
+{
+  "meta": {
+    "title": "Mermaid 预览",
+    "description": "在 Mermaid 代码块上添加预览按钮，并在可缩放、可拖拽的窗口中打开渲染后的图表。"
+  },
+  "ui": {
+    "preview": "预览 Mermaid 图",
+    "dialogTitle": "Mermaid 预览",
+    "close": "关闭",
+    "zoomIn": "放大",
+    "zoomOut": "缩小",
+    "fit": "适应窗口",
+    "zoomLevel": "缩放比例",
+    "loading": "正在渲染图表…",
+    "errorTitle": "无法渲染此 Mermaid 图",
+    "retry": "重试",
+    "hint": "拖拽平移 · 滚轮或双指缩放",
+    "empty": "未找到 Mermaid 代码。"
+  }
+}

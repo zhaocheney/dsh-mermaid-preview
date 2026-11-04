@@ -1,0 +1,20 @@
+{
+  "meta": {
+    "title": "Mermaid preview",
+    "description": "Adds a preview button to Mermaid code blocks and opens the rendered diagram in a zoomable, pannable window."
+  },
+  "ui": {
+    "preview": "Preview Mermaid diagram",
+    "dialogTitle": "Mermaid preview",
+    "close": "Close",
+    "zoomIn": "Zoom in",
+    "zoomOut": "Zoom out",
+    "fit": "Fit to window",
+    "zoomLevel": "Zoom level",
+    "loading": "Rendering diagram…",
+    "errorTitle": "Could not render this Mermaid diagram",
+    "retry": "Retry",
+    "hint": "Drag to pan · Scroll or pinch to zoom",
+    "empty": "No Mermaid code found."
+  }
+}
