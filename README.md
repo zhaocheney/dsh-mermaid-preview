@@ -65,6 +65,7 @@ Mermaid 版本与官网能力保持一致。升级时：
 
 - **不写宿主 DOM**：插件注册到 `shell.overlay`，用 `MutationObserver` / `ResizeObserver` / 滚动与尺寸事件读取代码块几何信息，把 React 图标按钮定位到代码块标题栏右上角。
 - **稳定的锚点**：使用 Markdown 渲染器公开的 `[data-code-block-content]`、`[data-code-block-banner]` 属性定位，而不是依赖哈希 CSS 类名。
+- **滚动只改样式**：滚动与尺寸变化只更新按钮的坐标/可见性，不触发 React 列表重渲染；Markdown 变更按 120ms 节流扫描，并按代码块缓存 Mermaid 判定，避免重复读取文本。
 - **语言识别**：优先识别 `code.language-mermaid`；当前 DSH 对未高亮的代码块不会输出语言类名（标题栏也显示为通用文案），因此同时按源码首个 Mermaid 图表声明（如 `sequenceDiagram`、`graph`、`flowchart`）识别，并缓存判定结果避免滚动时重复解析。
 - **命中测试**：通过 `document.elementFromPoint` 过滤被滚动容器、吸顶区域或弹窗遮挡的代码块，避免图标浮在错误位置。
 - **安全渲染**：Mermaid 使用 `securityLevel: 'strict'` 与 `suppressErrorRendering: true`；渲染失败只在预览窗口内显示错误，不会向宿主页面注入错误图。

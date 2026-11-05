@@ -445,6 +445,8 @@ var DIALOG_SIZE_KEY = "dsh-mermaid-preview:dialog-size";
 var MIN_DIALOG_WIDTH = 520;
 var MIN_DIALOG_HEIGHT = 360;
 var MOBILE_BREAKPOINT = 720;
+var VIEWPORT_GUTTER = 80;
+var MUTATION_SCAN_DELAY = 120;
 function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value));
 }
@@ -460,8 +462,8 @@ function frameChromeTop() {
 }
 function dialogBounds() {
   return {
-    maxWidth: Math.max(MIN_DIALOG_WIDTH, window.innerWidth - 80),
-    maxHeight: Math.max(MIN_DIALOG_HEIGHT, window.innerHeight - 80 - frameChromeTop())
+    maxWidth: Math.max(MIN_DIALOG_WIDTH, window.innerWidth - VIEWPORT_GUTTER),
+    maxHeight: Math.max(MIN_DIALOG_HEIGHT, window.innerHeight - VIEWPORT_GUTTER - frameChromeTop())
   };
 }
 function readStoredDialogSize() {
@@ -484,8 +486,7 @@ function readStoredDialogSize() {
 }
 function storeDialogSize(size) {
   try {
-    if (size === null) window.localStorage.removeItem(DIALOG_SIZE_KEY);
-    else window.localStorage.setItem(DIALOG_SIZE_KEY, JSON.stringify(size));
+    window.localStorage.setItem(DIALOG_SIZE_KEY, JSON.stringify(size));
   } catch {
   }
 }
@@ -524,10 +525,7 @@ function mermaidCodeOf(block) {
 function sameTriggers(left, right) {
   if (left.length !== right.length) return false;
   for (let index = 0; index < left.length; index += 1) {
-    const a = left[index];
-    const b = right[index];
-    if (a.key !== b.key) return false;
-    if (Math.abs(a.top - b.top) > 0.1 || Math.abs(a.left - b.left) > 0.1) return false;
+    if (left[index].key !== right[index].key) return false;
   }
   return true;
 }
@@ -612,6 +610,7 @@ function createMermaidRenderer(loadChunk) {
   let modulePromise;
   let queue = Promise.resolve();
   let sequence = 0;
+  let initializedKey;
   const load = () => {
     if (modulePromise === void 0) {
       modulePromise = Promise.resolve().then(loadChunk).then((chunk) => {
@@ -629,14 +628,20 @@ function createMermaidRenderer(loadChunk) {
   };
   const run = async (code, colorScheme) => {
     const mermaid = await load();
-    mermaid.initialize({
-      startOnLoad: false,
-      securityLevel: "strict",
-      suppressErrorRendering: true,
-      theme: colorScheme === "dark" ? "dark" : "default",
-      themeVariables: { background: "transparent" },
-      fontFamily: getComputedStyle(document.body).fontFamily
-    });
+    const theme = colorScheme === "dark" ? "dark" : "default";
+    const fontFamily = getComputedStyle(document.body).fontFamily;
+    const initKey = `${theme}\0${fontFamily}`;
+    if (initializedKey !== initKey) {
+      mermaid.initialize({
+        startOnLoad: false,
+        securityLevel: "strict",
+        suppressErrorRendering: true,
+        theme,
+        themeVariables: { background: "transparent" },
+        fontFamily
+      });
+      initializedKey = initKey;
+    }
     sequence += 1;
     const id = `dsh-mermaid-preview-${Date.now().toString(36)}-${sequence}`;
     try {
@@ -674,12 +679,20 @@ function useColorScheme(ctx) {
   );
   return snapshot?.active?.colorScheme === "dark" ? "dark" : "light";
 }
-function TriggerLayer({ onOpen, t }) {
+function TriggerLayer({ onOpen, suspended, t }) {
   const [entries, setEntries] = useState([]);
   const [tip, setTip] = useState(null);
   const idsRef = useRef(/* @__PURE__ */ new WeakMap());
   const sequenceRef = useRef(0);
   const tipTimerRef = useRef(0);
+  const entriesRef = useRef(entries);
+  const buttonsRef = useRef(/* @__PURE__ */ new Map());
+  const suspendedRef = useRef(suspended);
+  const scheduleRef = useRef(() => {
+  });
+  useLayoutEffect(() => {
+    entriesRef.current = entries;
+  }, [entries]);
   const hideTip = useCallback(() => {
     window.clearTimeout(tipTimerRef.current);
     tipTimerRef.current = 0;
@@ -688,7 +701,9 @@ function TriggerLayer({ onOpen, t }) {
   const showTip = useCallback((entry, element) => {
     window.clearTimeout(tipTimerRef.current);
     tipTimerRef.current = window.setTimeout(() => {
+      if (!element.isConnected) return;
       const rect = element.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) return;
       setTip({
         key: entry.key,
         label: t("preview"),
@@ -715,10 +730,20 @@ function TriggerLayer({ onOpen, t }) {
     if (!entries.some((entry) => entry.key === tip.key)) setTip(null);
   }, [entries, tip]);
   useEffect(() => {
+    suspendedRef.current = suspended;
+    if (suspended) {
+      hideTip();
+      return;
+    }
+    scheduleRef.current();
+  }, [suspended, hideTip]);
+  useEffect(() => {
     let frame = 0;
+    let mutationTimer = 0;
     let disposed = false;
     let resizeObserver;
     const observed = /* @__PURE__ */ new Set();
+    const dirty = /* @__PURE__ */ new WeakSet();
     const idFor = (block) => {
       let id = idsRef.current.get(block);
       if (id === void 0) {
@@ -730,18 +755,33 @@ function TriggerLayer({ onOpen, t }) {
     };
     const verdicts = /* @__PURE__ */ new WeakMap();
     const isMermaidBlock = (block) => {
-      const code = block.querySelector("[data-code-block-content] code");
-      if (code !== null && isMermaidCode(code)) return true;
-      const source = mermaidCodeOf(block);
       const cached = verdicts.get(block);
-      if (cached !== void 0 && cached.source === source) return cached.mermaid;
-      const mermaid = looksLikeMermaid(source);
-      verdicts.set(block, { source, mermaid });
+      if (cached !== void 0 && !dirty.has(block)) return cached;
+      const code = block.querySelector("[data-code-block-content] code");
+      const mermaid = code !== null && isMermaidCode(code) ? true : looksLikeMermaid(mermaidCodeOf(block));
+      verdicts.set(block, mermaid);
+      dirty.delete(block);
       return mermaid;
+    };
+    const blockOfNode = (node) => {
+      const element = node instanceof Element ? node : node.parentElement;
+      return element?.closest("[data-code-block-content]")?.parentElement ?? null;
+    };
+    const applyPositions = (next) => {
+      for (const item of next) {
+        const button = buttonsRef.current.get(item.key);
+        if (button === void 0) continue;
+        const left = `${item.left}px`;
+        const top = `${item.top}px`;
+        const visibility = item.visible ? "visible" : "hidden";
+        if (button.style.left !== left) button.style.left = left;
+        if (button.style.top !== top) button.style.top = top;
+        if (button.style.visibility !== visibility) button.style.visibility = visibility;
+      }
     };
     const scan = () => {
       frame = 0;
-      if (disposed) return;
+      if (disposed || suspendedRef.current) return;
       const next = [];
       const current = /* @__PURE__ */ new Set();
       for (const content of document.querySelectorAll("[data-code-block-content]")) {
@@ -749,8 +789,13 @@ function TriggerLayer({ onOpen, t }) {
         if (block === null || block.querySelector("[data-code-block-banner]") === null) continue;
         if (!isMermaidBlock(block)) continue;
         const rect = triggerRectFor(block);
-        if (rect === null) continue;
-        next.push({ key: idFor(block), block, top: rect.top, left: rect.left });
+        next.push({
+          key: idFor(block),
+          block,
+          top: rect?.top ?? 0,
+          left: rect?.left ?? 0,
+          visible: rect !== null
+        });
         current.add(block);
         if (!observed.has(block)) {
           observed.add(block);
@@ -762,19 +807,47 @@ function TriggerLayer({ onOpen, t }) {
         observed.delete(block);
         resizeObserver?.unobserve(block);
       }
-      setEntries((previous) => sameTriggers(previous, next) ? previous : next);
+      if (sameTriggers(entriesRef.current, next)) {
+        for (let index = 0; index < next.length; index += 1) {
+          const entry = entriesRef.current[index];
+          entry.top = next[index].top;
+          entry.left = next[index].left;
+          entry.visible = next[index].visible;
+        }
+        applyPositions(next);
+        return;
+      }
+      setEntries(next);
     };
     const schedule = () => {
-      if (disposed || frame !== 0) return;
+      if (disposed || frame !== 0 || suspendedRef.current) return;
       frame = requestAnimationFrame(scan);
     };
+    scheduleRef.current = schedule;
     if (typeof ResizeObserver === "function") {
       resizeObserver = new ResizeObserver(schedule);
     }
-    const mutationObserver = new MutationObserver(schedule);
+    const mutationObserver = new MutationObserver((records) => {
+      for (const record of records) {
+        const block = blockOfNode(record.target);
+        if (block !== null) dirty.add(block);
+        if (record.type !== "childList") continue;
+        for (const node of record.addedNodes) {
+          const added = blockOfNode(node);
+          if (added !== null) dirty.add(added);
+        }
+      }
+      if (suspendedRef.current) return;
+      if (mutationTimer !== 0) return;
+      mutationTimer = window.setTimeout(() => {
+        mutationTimer = 0;
+        schedule();
+      }, MUTATION_SCAN_DELAY);
+    });
     mutationObserver.observe(document.body, {
       childList: true,
       subtree: true,
+      characterData: true,
       attributes: true,
       attributeFilter: ["class"]
     });
@@ -789,7 +862,10 @@ function TriggerLayer({ onOpen, t }) {
     schedule();
     return () => {
       disposed = true;
+      scheduleRef.current = () => {
+      };
       if (frame !== 0) cancelAnimationFrame(frame);
+      window.clearTimeout(mutationTimer);
       mutationObserver.disconnect();
       resizeObserver?.disconnect();
       window.removeEventListener("scroll", schedule, true);
@@ -805,9 +881,17 @@ function TriggerLayer({ onOpen, t }) {
       "button",
       {
         key: entry.key,
+        ref: (element) => {
+          if (element === null) buttonsRef.current.delete(entry.key);
+          else buttonsRef.current.set(entry.key, element);
+        },
         type: "button",
         className: "dsh-mermaid-preview-trigger",
-        style: { top: entry.top, left: entry.left },
+        style: {
+          top: entry.top,
+          left: entry.left,
+          visibility: entry.visible ? "visible" : "hidden"
+        },
         "aria-label": t("preview"),
         onPointerDown: (event) => event.stopPropagation(),
         onPointerEnter: (event) => showTip(entry, event.currentTarget),
@@ -970,13 +1054,29 @@ function PreviewDialog({ code, colorScheme, onClose, renderMermaid, t }) {
     if (status !== "ready") return void 0;
     const viewport = viewportRef.current;
     if (viewport === null) return void 0;
+    let frame = 0;
+    let pending = null;
     const onWheel = (event) => {
       event.preventDefault();
       const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? 100 : 1;
-      zoomAt(event.clientX, event.clientY, Math.exp(-event.deltaY * unit * 15e-4));
+      if (pending === null) pending = { x: event.clientX, y: event.clientY, delta: 0 };
+      pending.x = event.clientX;
+      pending.y = event.clientY;
+      pending.delta += event.deltaY * unit;
+      if (frame !== 0) return;
+      frame = requestAnimationFrame(() => {
+        frame = 0;
+        const batch = pending;
+        pending = null;
+        if (batch === null || batch.delta === 0) return;
+        zoomAt(batch.x, batch.y, Math.exp(-batch.delta * 15e-4));
+      });
     };
     viewport.addEventListener("wheel", onWheel, { passive: false });
-    return () => viewport.removeEventListener("wheel", onWheel);
+    return () => {
+      viewport.removeEventListener("wheel", onWheel);
+      if (frame !== 0) cancelAnimationFrame(frame);
+    };
   }, [status, zoomAt]);
   useEffect(() => {
     const dialog = dialogRef.current;
@@ -1096,6 +1196,9 @@ function PreviewDialog({ code, colorScheme, onClose, renderMermaid, t }) {
     if (pointersRef.current.size === 0) {
       gestureRef.current = null;
       setDragging(false);
+      window.setTimeout(() => {
+        movedRef.current = false;
+      }, 0);
       return;
     }
     startGesture();
@@ -1142,7 +1245,7 @@ function PreviewDialog({ code, colorScheme, onClose, renderMermaid, t }) {
     if (session === null || session.pointerId !== event.pointerId) return;
     resizeRef.current = null;
     setResizing(false);
-    storeDialogSize(dialogSizeRef.current);
+    if (dialogSizeRef.current !== null) storeDialogSize(dialogSizeRef.current);
   }, []);
   const zoomLabel = `${t("zoomLevel")}: ${Math.round(view.scale * 100)}%`;
   return /* @__PURE__ */ React2.createElement(
@@ -1241,9 +1344,9 @@ function PreviewDialog({ code, colorScheme, onClose, renderMermaid, t }) {
             dangerouslySetInnerHTML: { __html: svg }
           }
         ) : null,
-        status === "loading" ? /* @__PURE__ */ React2.createElement("div", { className: "dsh-mermaid-preview-status" }, /* @__PURE__ */ React2.createElement("div", { className: "dsh-mermaid-preview-spinner", "aria-hidden": "true" }), /* @__PURE__ */ React2.createElement("div", null, t("loading"))) : null,
-        status === "empty" ? /* @__PURE__ */ React2.createElement("div", { className: "dsh-mermaid-preview-status" }, t("empty")) : null,
-        status === "error" ? /* @__PURE__ */ React2.createElement("div", { className: "dsh-mermaid-preview-status" }, /* @__PURE__ */ React2.createElement("div", { className: "dsh-mermaid-preview-error" }, /* @__PURE__ */ React2.createElement("h2", null, t("errorTitle")), /* @__PURE__ */ React2.createElement("pre", null, error || t("errorTitle")), /* @__PURE__ */ React2.createElement(
+        status === "loading" ? /* @__PURE__ */ React2.createElement("div", { className: "dsh-mermaid-preview-status", role: "status", "aria-live": "polite" }, /* @__PURE__ */ React2.createElement("div", { className: "dsh-mermaid-preview-spinner", "aria-hidden": "true" }), /* @__PURE__ */ React2.createElement("div", null, t("loading"))) : null,
+        status === "empty" ? /* @__PURE__ */ React2.createElement("div", { className: "dsh-mermaid-preview-status", role: "status" }, t("empty")) : null,
+        status === "error" ? /* @__PURE__ */ React2.createElement("div", { className: "dsh-mermaid-preview-status", role: "alert" }, /* @__PURE__ */ React2.createElement("div", { className: "dsh-mermaid-preview-error" }, /* @__PURE__ */ React2.createElement("h2", null, t("errorTitle")), /* @__PURE__ */ React2.createElement("pre", null, error || t("errorTitle")), /* @__PURE__ */ React2.createElement(
           "button",
           {
             type: "button",
@@ -1260,6 +1363,7 @@ function PreviewDialog({ code, colorScheme, onClose, renderMermaid, t }) {
           className: "dsh-mermaid-preview-resizer",
           "data-dsh-mermaid-preview-resizer": "",
           role: "presentation",
+          "aria-hidden": "true",
           title: t("resize"),
           onPointerDown: onResizeStart,
           onPointerMove: onResizeMove,
@@ -1282,7 +1386,7 @@ function MermaidPreviewRoot({ ctx, renderMermaid, t }) {
     setPreview({ code });
   }, []);
   const close = useCallback(() => setPreview(null), []);
-  return /* @__PURE__ */ React2.createElement(React2.Fragment, null, /* @__PURE__ */ React2.createElement("style", null, STYLE), /* @__PURE__ */ React2.createElement(TriggerLayer, { onOpen: open, t }), preview === null ? null : (0, import_react_dom.createPortal)(
+  return /* @__PURE__ */ React2.createElement(React2.Fragment, null, /* @__PURE__ */ React2.createElement("style", null, STYLE), /* @__PURE__ */ React2.createElement(TriggerLayer, { onOpen: open, suspended: preview !== null, t }), preview === null ? null : (0, import_react_dom.createPortal)(
     /* @__PURE__ */ React2.createElement(
       PreviewDialog,
       {
