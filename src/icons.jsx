@@ -47,6 +47,15 @@ export function FitIcon() {
   );
 }
 
+/** Diagonal grip in the dialog corner, used to resize the preview window. */
+export function ResizeIcon() {
+  return (
+    <svg viewBox="0 0 16 16" aria-hidden="true">
+      <path {...stroke} strokeWidth={1.4} d="M14 6 6 14M14 10.5 10.5 14" />
+    </svg>
+  );
+}
+
 /** Close glyph. */
 export function CloseIcon() {
   return (

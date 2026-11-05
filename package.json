@@ -1,6 +1,6 @@
 {
   "name": "dsh-mermaid-preview",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "description": "Preview Mermaid diagrams rendered from Mermaid code blocks in the DeepSeek Harness Web UI.",

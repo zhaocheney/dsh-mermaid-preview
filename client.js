@@ -1,4 +1,4 @@
-/*! dsh-mermaid-preview v0.1.0 | MIT */
+/*! dsh-mermaid-preview v0.2.0 | MIT */
 window.__ModuleLoader__.load({
   id: "dsh-mermaid-preview",
   factory(require) {
@@ -59,7 +59,8 @@ var en_default = {
     errorTitle: "Could not render this Mermaid diagram",
     retry: "Retry",
     hint: "Drag to pan \xB7 Scroll or pinch to zoom",
-    empty: "No Mermaid code found."
+    empty: "No Mermaid code found.",
+    resize: "Drag to resize the window"
   }
 };
 
@@ -81,7 +82,8 @@ var zh_default = {
     errorTitle: "\u65E0\u6CD5\u6E32\u67D3\u6B64 Mermaid \u56FE",
     retry: "\u91CD\u8BD5",
     hint: "\u62D6\u62FD\u5E73\u79FB \xB7 \u6EDA\u8F6E\u6216\u53CC\u6307\u7F29\u653E",
-    empty: "\u672A\u627E\u5230 Mermaid \u4EE3\u7801\u3002"
+    empty: "\u672A\u627E\u5230 Mermaid \u4EE3\u7801\u3002",
+    resize: "\u62D6\u52A8\u8C03\u6574\u7A97\u53E3\u5927\u5C0F"
   }
 };
 
@@ -105,6 +107,9 @@ function ZoomOutIcon() {
 }
 function FitIcon() {
   return /* @__PURE__ */ React.createElement("svg", { viewBox: "0 0 24 24", "aria-hidden": "true" }, /* @__PURE__ */ React.createElement("path", { ...stroke, d: "M9 4H4v5M15 4h5v5M9 20H4v-5M15 20h5v-5" }));
+}
+function ResizeIcon() {
+  return /* @__PURE__ */ React.createElement("svg", { viewBox: "0 0 16 16", "aria-hidden": "true" }, /* @__PURE__ */ React.createElement("path", { ...stroke, strokeWidth: 1.4, d: "M14 6 6 14M14 10.5 10.5 14" }));
 }
 function CloseIcon() {
   return /* @__PURE__ */ React.createElement("svg", { viewBox: "0 0 24 24", "aria-hidden": "true" }, /* @__PURE__ */ React.createElement("path", { ...stroke, d: "m6 6 12 12M18 6 6 18" }));
@@ -178,10 +183,13 @@ var STYLE = `
   backdrop-filter: var(--dsw-mask-blur, blur(2px));
 }
 .dsh-mermaid-preview-dialog {
+  position: relative;
   display: flex;
   flex-direction: column;
-  width: min(1100px, calc(100vw - 80px));
-  height: min(820px, calc(100vh - 80px - var(--dsh-frame-chrome-top, 0px)));
+  width: min(1600px, 92vw);
+  height: min(1000px, 90vh);
+  max-width: calc(100vw - 80px);
+  max-height: calc(100vh - 80px - var(--dsh-frame-chrome-top, 0px));
   overflow: hidden;
   border: 1px solid var(--dsw-alias-border-l1);
   border-radius: var(--dsw-radius-lg, 10px);
@@ -189,6 +197,35 @@ var STYLE = `
   box-shadow: var(--dsw-elevation-prominent, 0 24px 80px rgba(0, 0, 0, 0.3));
   color: var(--dsw-alias-label-primary);
   font-family: var(--dsw-font-family);
+}
+.dsh-mermaid-preview-resizer {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  align-items: flex-end;
+  justify-content: flex-end;
+  width: 22px;
+  height: 22px;
+  padding: 3px;
+  color: var(--dsw-alias-label-secondary);
+  cursor: nwse-resize;
+  opacity: 0.55;
+  touch-action: none;
+}
+.dsh-mermaid-preview-resizer:hover,
+.dsh-mermaid-preview-resizer:focus-visible {
+  color: var(--dsw-alias-label-primary);
+  opacity: 1;
+}
+.dsh-mermaid-preview-resizer > svg {
+  display: block;
+  width: 14px;
+  height: 14px;
+}
+.dsh-mermaid-preview-dialog[data-resizing="true"] {
+  cursor: nwse-resize;
+  user-select: none;
 }
 .dsh-mermaid-preview-header {
   display: flex;
@@ -367,12 +404,15 @@ var STYLE = `
     padding: 0;
   }
   .dsh-mermaid-preview-dialog {
-    width: 100vw;
-    height: 100vh;
+    width: 100vw !important;
+    height: 100vh !important;
     max-width: none;
     max-height: none;
     border: 0;
     border-radius: 0;
+  }
+  .dsh-mermaid-preview-resizer {
+    display: none;
   }
 }
 @media (prefers-reduced-motion: reduce) {
@@ -401,8 +441,53 @@ var BANNER_PADDING = 14;
 var MIN_SCALE = 0.08;
 var MAX_SCALE = 8;
 var FIT_MAX_SCALE = 2;
+var DIALOG_SIZE_KEY = "dsh-mermaid-preview:dialog-size";
+var MIN_DIALOG_WIDTH = 520;
+var MIN_DIALOG_HEIGHT = 360;
+var MOBILE_BREAKPOINT = 720;
 function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value));
+}
+function frameChromeTop() {
+  try {
+    const value = Number.parseFloat(
+      getComputedStyle(document.documentElement).getPropertyValue("--dsh-frame-chrome-top")
+    );
+    return Number.isFinite(value) ? value : 0;
+  } catch {
+    return 0;
+  }
+}
+function dialogBounds() {
+  return {
+    maxWidth: Math.max(MIN_DIALOG_WIDTH, window.innerWidth - 80),
+    maxHeight: Math.max(MIN_DIALOG_HEIGHT, window.innerHeight - 80 - frameChromeTop())
+  };
+}
+function readStoredDialogSize() {
+  if (typeof window === "undefined" || window.innerWidth <= MOBILE_BREAKPOINT) return null;
+  try {
+    const raw = window.localStorage.getItem(DIALOG_SIZE_KEY);
+    if (raw === null) return null;
+    const parsed = JSON.parse(raw);
+    const width = Number(parsed?.width);
+    const height = Number(parsed?.height);
+    if (!Number.isFinite(width) || !Number.isFinite(height)) return null;
+    const bounds = dialogBounds();
+    return {
+      width: clamp(width, MIN_DIALOG_WIDTH, bounds.maxWidth),
+      height: clamp(height, MIN_DIALOG_HEIGHT, bounds.maxHeight)
+    };
+  } catch {
+    return null;
+  }
+}
+function storeDialogSize(size) {
+  try {
+    if (size === null) window.localStorage.removeItem(DIALOG_SIZE_KEY);
+    else window.localStorage.setItem(DIALOG_SIZE_KEY, JSON.stringify(size));
+  } catch {
+  }
 }
 function isMermaidCode(code) {
   for (const name of code.classList) {
@@ -770,10 +855,17 @@ function PreviewDialog({ code, colorScheme, onClose, renderMermaid, t }) {
   const [view, setView] = useState({ scale: 1, x: 0, y: 0 });
   const [fitted, setFitted] = useState(false);
   const [dragging, setDragging] = useState(false);
+  const [dialogSize, setDialogSize] = useState(readStoredDialogSize);
+  const [resizing, setResizing] = useState(false);
   const viewRef = useRef(view);
+  const dialogSizeRef = useRef(dialogSize);
+  const resizeRef = useRef(null);
   useLayoutEffect(() => {
     viewRef.current = view;
   }, [view]);
+  useLayoutEffect(() => {
+    dialogSizeRef.current = dialogSize;
+  }, [dialogSize]);
   const fit = useCallback(() => {
     const viewport = viewportRef.current;
     const stage = stageRef.current;
@@ -1017,6 +1109,41 @@ function PreviewDialog({ code, colorScheme, onClose, renderMermaid, t }) {
   const closeOnBackdrop = (event) => {
     if (event.target === event.currentTarget) onClose();
   };
+  const onResizeStart = useCallback((event) => {
+    if (event.button !== 0) return;
+    const dialog = dialogRef.current;
+    if (dialog === null) return;
+    const rect = dialog.getBoundingClientRect();
+    resizeRef.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      width: rect.width,
+      height: rect.height,
+      ...dialogBounds()
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
+    event.preventDefault();
+    event.stopPropagation();
+    setResizing(true);
+  }, []);
+  const onResizeMove = useCallback((event) => {
+    const session = resizeRef.current;
+    if (session === null || session.pointerId !== event.pointerId) return;
+    const next = {
+      width: clamp(session.width + (event.clientX - session.startX) * 2, MIN_DIALOG_WIDTH, session.maxWidth),
+      height: clamp(session.height + (event.clientY - session.startY) * 2, MIN_DIALOG_HEIGHT, session.maxHeight)
+    };
+    dialogSizeRef.current = next;
+    setDialogSize(next);
+  }, []);
+  const onResizeEnd = useCallback((event) => {
+    const session = resizeRef.current;
+    if (session === null || session.pointerId !== event.pointerId) return;
+    resizeRef.current = null;
+    setResizing(false);
+    storeDialogSize(dialogSizeRef.current);
+  }, []);
   const zoomLabel = `${t("zoomLevel")}: ${Math.round(view.scale * 100)}%`;
   return /* @__PURE__ */ React2.createElement(
     "div",
@@ -1031,11 +1158,13 @@ function PreviewDialog({ code, colorScheme, onClose, renderMermaid, t }) {
       {
         ref: dialogRef,
         className: "dsh-mermaid-preview-dialog",
+        "data-resizing": resizing ? "true" : "false",
         role: "dialog",
         "aria-modal": "true",
         "aria-labelledby": titleId,
         "aria-describedby": status === "ready" && fitted ? hintId : void 0,
         tabIndex: -1,
+        style: dialogSize === null ? void 0 : { width: dialogSize.width, height: dialogSize.height },
         onMouseDown: (event) => event.stopPropagation()
       },
       /* @__PURE__ */ React2.createElement("div", { className: "dsh-mermaid-preview-header" }, /* @__PURE__ */ React2.createElement("div", { className: "dsh-mermaid-preview-title", id: titleId }, t("dialogTitle")), /* @__PURE__ */ React2.createElement("div", { className: "dsh-mermaid-preview-controls" }, /* @__PURE__ */ React2.createElement(
@@ -1124,6 +1253,21 @@ function PreviewDialog({ code, colorScheme, onClose, renderMermaid, t }) {
           t("retry")
         ))) : null,
         status === "ready" && fitted ? /* @__PURE__ */ React2.createElement("div", { className: "dsh-mermaid-preview-hint", id: hintId }, t("hint")) : null
+      ),
+      /* @__PURE__ */ React2.createElement(
+        "div",
+        {
+          className: "dsh-mermaid-preview-resizer",
+          "data-dsh-mermaid-preview-resizer": "",
+          role: "presentation",
+          title: t("resize"),
+          onPointerDown: onResizeStart,
+          onPointerMove: onResizeMove,
+          onPointerUp: onResizeEnd,
+          onPointerCancel: onResizeEnd,
+          onLostPointerCapture: onResizeEnd
+        },
+        /* @__PURE__ */ React2.createElement(ResizeIcon, null)
       )
     )
   );

@@ -15,6 +15,7 @@
     "errorTitle": "Could not render this Mermaid diagram",
     "retry": "Retry",
     "hint": "Drag to pan · Scroll or pinch to zoom",
-    "empty": "No Mermaid code found."
+    "empty": "No Mermaid code found.",
+    "resize": "Drag to resize the window"
   }
 }

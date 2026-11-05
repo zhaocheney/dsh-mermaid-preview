@@ -2,7 +2,7 @@ import * as React from 'react';
 import { createPortal } from 'react-dom';
 import en from '../locale/en.json';
 import zh from '../locale/zh.json';
-import { CloseIcon, FitIcon, PreviewIcon, ZoomInIcon, ZoomOutIcon } from './icons.jsx';
+import { CloseIcon, FitIcon, PreviewIcon, ResizeIcon, ZoomInIcon, ZoomOutIcon } from './icons.jsx';
 import { STYLE } from './styles.js';
 
 const {
@@ -23,10 +23,64 @@ const BANNER_PADDING = 14;
 const MIN_SCALE = 0.08;
 const MAX_SCALE = 8;
 const FIT_MAX_SCALE = 2;
+const DIALOG_SIZE_KEY = 'dsh-mermaid-preview:dialog-size';
+const MIN_DIALOG_WIDTH = 520;
+const MIN_DIALOG_HEIGHT = 360;
+const MOBILE_BREAKPOINT = 720;
 
 /** Clamp a number to an inclusive interval. */
 function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value));
+}
+
+/** Height the DSH shell reserves above the viewport, mirroring the backdrop padding. */
+function frameChromeTop() {
+  try {
+    const value = Number.parseFloat(
+      getComputedStyle(document.documentElement).getPropertyValue('--dsh-frame-chrome-top'),
+    );
+    return Number.isFinite(value) ? value : 0;
+  } catch {
+    return 0;
+  }
+}
+
+/** Bounds a resized dialog may occupy, matching the CSS max-width/max-height caps. */
+function dialogBounds() {
+  return {
+    maxWidth: Math.max(MIN_DIALOG_WIDTH, window.innerWidth - 80),
+    maxHeight: Math.max(MIN_DIALOG_HEIGHT, window.innerHeight - 80 - frameChromeTop()),
+  };
+}
+
+/** Read the size the user last dragged out; mobile keeps the full-screen layout. */
+function readStoredDialogSize() {
+  if (typeof window === 'undefined' || window.innerWidth <= MOBILE_BREAKPOINT) return null;
+  try {
+    const raw = window.localStorage.getItem(DIALOG_SIZE_KEY);
+    if (raw === null) return null;
+    const parsed = JSON.parse(raw);
+    const width = Number(parsed?.width);
+    const height = Number(parsed?.height);
+    if (!Number.isFinite(width) || !Number.isFinite(height)) return null;
+    const bounds = dialogBounds();
+    return {
+      width: clamp(width, MIN_DIALOG_WIDTH, bounds.maxWidth),
+      height: clamp(height, MIN_DIALOG_HEIGHT, bounds.maxHeight),
+    };
+  } catch {
+    return null;
+  }
+}
+
+/** Persist the dialog size; unavailable storage only limits the next session. */
+function storeDialogSize(size) {
+  try {
+    if (size === null) window.localStorage.removeItem(DIALOG_SIZE_KEY);
+    else window.localStorage.setItem(DIALOG_SIZE_KEY, JSON.stringify(size));
+  } catch {
+    // Private mode and quota failures are not worth interrupting the preview.
+  }
 }
 
 /** Whether a `<code>` element carries the `mermaid` fence language. */
@@ -480,11 +534,19 @@ function PreviewDialog({ code, colorScheme, onClose, renderMermaid, t }) {
   const [view, setView] = useState({ scale: 1, x: 0, y: 0 });
   const [fitted, setFitted] = useState(false);
   const [dragging, setDragging] = useState(false);
+  const [dialogSize, setDialogSize] = useState(readStoredDialogSize);
+  const [resizing, setResizing] = useState(false);
   const viewRef = useRef(view);
+  const dialogSizeRef = useRef(dialogSize);
+  const resizeRef = useRef(null);
 
   useLayoutEffect(() => {
     viewRef.current = view;
   }, [view]);
+
+  useLayoutEffect(() => {
+    dialogSizeRef.current = dialogSize;
+  }, [dialogSize]);
 
   const fit = useCallback(() => {
     const viewport = viewportRef.current;
@@ -748,6 +810,46 @@ function PreviewDialog({ code, colorScheme, onClose, renderMermaid, t }) {
     if (event.target === event.currentTarget) onClose();
   };
 
+  const onResizeStart = useCallback((event) => {
+    if (event.button !== 0) return;
+    const dialog = dialogRef.current;
+    if (dialog === null) return;
+    const rect = dialog.getBoundingClientRect();
+    resizeRef.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      width: rect.width,
+      height: rect.height,
+      ...dialogBounds(),
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
+    event.preventDefault();
+    event.stopPropagation();
+    setResizing(true);
+  }, []);
+
+  const onResizeMove = useCallback((event) => {
+    const session = resizeRef.current;
+    if (session === null || session.pointerId !== event.pointerId) return;
+    // The dialog is centered in the backdrop, so each edge travels half of any size
+    // change; doubling the pointer delta keeps the corner handle under the cursor.
+    const next = {
+      width: clamp(session.width + (event.clientX - session.startX) * 2, MIN_DIALOG_WIDTH, session.maxWidth),
+      height: clamp(session.height + (event.clientY - session.startY) * 2, MIN_DIALOG_HEIGHT, session.maxHeight),
+    };
+    dialogSizeRef.current = next;
+    setDialogSize(next);
+  }, []);
+
+  const onResizeEnd = useCallback((event) => {
+    const session = resizeRef.current;
+    if (session === null || session.pointerId !== event.pointerId) return;
+    resizeRef.current = null;
+    setResizing(false);
+    storeDialogSize(dialogSizeRef.current);
+  }, []);
+
   const zoomLabel = `${t('zoomLevel')}: ${Math.round(view.scale * 100)}%`;
 
   return (
@@ -760,11 +862,13 @@ function PreviewDialog({ code, colorScheme, onClose, renderMermaid, t }) {
       <div
         ref={dialogRef}
         className="dsh-mermaid-preview-dialog"
+        data-resizing={resizing ? 'true' : 'false'}
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
         aria-describedby={status === 'ready' && fitted ? hintId : undefined}
         tabIndex={-1}
+        style={dialogSize === null ? undefined : { width: dialogSize.width, height: dialogSize.height }}
         onMouseDown={(event) => event.stopPropagation()}
       >
         <div className="dsh-mermaid-preview-header">
@@ -868,6 +972,19 @@ function PreviewDialog({ code, colorScheme, onClose, renderMermaid, t }) {
           {status === 'ready' && fitted ? (
             <div className="dsh-mermaid-preview-hint" id={hintId}>{t('hint')}</div>
           ) : null}
+        </div>
+        <div
+          className="dsh-mermaid-preview-resizer"
+          data-dsh-mermaid-preview-resizer=""
+          role="presentation"
+          title={t('resize')}
+          onPointerDown={onResizeStart}
+          onPointerMove={onResizeMove}
+          onPointerUp={onResizeEnd}
+          onPointerCancel={onResizeEnd}
+          onLostPointerCapture={onResizeEnd}
+        >
+          <ResizeIcon />
         </div>
       </div>
     </div>
